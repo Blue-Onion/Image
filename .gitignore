@@ -1,0 +1,8 @@
+*.o
+image_compressor
+*.dSYM
+compressed_output.png
+*.jpg
+*.jpeg
+*.bmp
+
