@@ -1,4 +1,6 @@
+# On macOS, gcc is typically clang - either works fine
 CC = gcc
+# Alternative: CC = clang
 CFLAGS = -Wall -Wextra -std=c11 `pkg-config --cflags gtk+-3.0`
 LDFLAGS = `pkg-config --libs gtk+-3.0` -lm
 TARGET = image_compressor

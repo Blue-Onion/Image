@@ -45,20 +45,70 @@ sudo dnf install gtk3-devel gcc make
 
 ## Building
 
-1. Clone or download this repository
-2. Navigate to the project directory
-3. Build the project:
+### Step 1: Install Dependencies
 
+**macOS:**
+
+1. **Install C Compiler (if not already installed):**
+   ```bash
+   # Install Xcode Command Line Tools (includes gcc/clang)
+   xcode-select --install
+   ```
+   On macOS, `gcc` is actually Apple's clang compiler - both work fine!
+
+2. **Install GTK+3 using Homebrew:**
+   ```bash
+   brew install gtk+3
+   ```
+
+3. **Set PKG_CONFIG_PATH** (add to `~/.zshrc` or `~/.bashrc` for permanent setup):
+   ```bash
+   export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
+   # For Intel Macs, use: export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
+   ```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get update
+sudo apt-get install libgtk-3-dev build-essential pkg-config
+```
+
+**Fedora/RHEL:**
+```bash
+sudo dnf install gtk3-devel gcc make pkg-config
+```
+
+### Step 2: Compile
+
+**Using Makefile (Recommended):**
 ```bash
 make
 ```
 
-Or install dependencies and build:
-
+**Or compile manually:**
 ```bash
-make install-deps
-make
+# Use gcc or clang (both work on macOS)
+gcc -Wall -Wextra -std=c11 \
+    `pkg-config --cflags --libs gtk+-3.0` -lm \
+    main.c gui.c image_processor.c sparse_matrix.c \
+    -o image_compressor
+
+# Or use clang directly:
+clang -Wall -Wextra -std=c11 \
+    `pkg-config --cflags --libs gtk+-3.0` -lm \
+    main.c gui.c image_processor.c sparse_matrix.c \
+    -o image_compressor
 ```
+
+**Or use the compile script:**
+```bash
+./compile.sh
+```
+The script will automatically detect and use gcc or clang.
+
+If you get "Package gtk+-3.0 was not found", make sure:
+1. GTK+3 is installed: `brew list gtk+3` (macOS) or check with package manager
+2. PKG_CONFIG_PATH is set correctly (see Step 1)
 
 ## Usage
 
