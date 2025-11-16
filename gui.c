@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 void update_status(AppData* app_data, const char* message) {
     if (app_data && app_data->status_label) {
@@ -63,6 +64,17 @@ void on_file_selected(GtkFileChooserButton* button, gpointer data) {
     if (app_data->current_image) {
         image_free(app_data->current_image);
         app_data->current_image = NULL;
+    }
+    
+    // Disable download button when new image is loaded
+    if (app_data->download_button) {
+        gtk_widget_set_sensitive(app_data->download_button, FALSE);
+    }
+    
+    // Free previous compressed image
+    if (app_data->compressed_image_data) {
+        image_free(app_data->compressed_image_data);
+        app_data->compressed_image_data = NULL;
     }
     
     // Load new image
@@ -141,77 +153,168 @@ void on_compress_clicked(GtkWidget* widget, gpointer data) {
         return;
     }
     
-    update_status(app_data, "Compressing image...");
+    update_status(app_data, "Compressing image to 50% size...");
     gtk_widget_set_sensitive(app_data->compress_button, FALSE);
     
-    // Free previous sparse matrices
-    if (app_data->current_sparse && app_data->current_channels > 0) {
-        for (int i = 0; i < app_data->current_channels; i++) {
-            if (app_data->current_sparse[i]) {
-                sparse_matrix_free(app_data->current_sparse[i]);
-            }
-        }
-        free(app_data->current_sparse);
-        app_data->current_sparse = NULL;
+    // Free previous compressed image if exists
+    if (app_data->compressed_image_data) {
+        image_free(app_data->compressed_image_data);
+        app_data->compressed_image_data = NULL;
     }
     
-    // Convert to sparse matrices
-    app_data->current_sparse = image_to_sparse_matrices(
-        app_data->current_image, threshold);
+    // Get original file size for comparison
+    long original_size = 0;
+    if (app_data->current_image) {
+        // Save original temporarily to get file size
+        const char* temp_orig = "temp_orig_size.jpg";
+        image_save_with_quality(app_data->current_image, temp_orig, 95);
+        original_size = get_file_size(temp_orig);
+        remove(temp_orig);
+    }
     
-    if (!app_data->current_sparse) {
+    // Compress image to 50% of original size
+    float size_reduction = 0.0f;
+    Image* compressed_img = image_compress_50_percent(
+        app_data->current_image, output_file, &size_reduction);
+    
+    if (!compressed_img) {
         update_status(app_data, "Error: Failed to compress image");
         gtk_widget_set_sensitive(app_data->compress_button, TRUE);
         return;
     }
     
-    app_data->current_channels = app_data->current_image->channels;
+    // Get compressed file size
+    long compressed_size = get_file_size(output_file);
     
-    // Calculate compression ratio
-    float ratio = calculate_total_compression_ratio(
-        app_data->current_sparse,
-        app_data->current_channels,
-        app_data->current_image->width,
-        app_data->current_image->height);
-    
-    // Convert back to image
-    Image* compressed_img = sparse_matrices_to_image(
-        app_data->current_sparse,
-        app_data->current_channels);
-    
-    if (!compressed_img) {
-        update_status(app_data, "Error: Failed to decompress image");
-        gtk_widget_set_sensitive(app_data->compress_button, TRUE);
-        return;
+    // Free previous compressed image data
+    if (app_data->compressed_image_data) {
+        image_free(app_data->compressed_image_data);
     }
     
-    // Save compressed image
-    if (image_save(compressed_img, output_file)) {
-        char status[256];
-        snprintf(status, sizeof(status),
-                "Saved! Compression ratio: %.2f:1 (Original: %d KB, Compressed: %d KB)",
-                ratio,
-                (app_data->current_image->width * app_data->current_image->height * 
-                 app_data->current_image->channels) / 1024,
-                (sparse_matrix_get_size_bytes(app_data->current_sparse[0]) * 
-                 app_data->current_channels) / 1024);
+    // Save a copy for download
+    app_data->compressed_image_data = image_create(
+        compressed_img->width, compressed_img->height, compressed_img->channels);
+    if (app_data->compressed_image_data) {
+        memcpy(app_data->compressed_image_data->data, compressed_img->data,
+               compressed_img->width * compressed_img->height * compressed_img->channels);
+        
+        char status[512];
+        if (original_size > 0 && compressed_size > 0) {
+            float actual_reduction = (1.0f - (float)compressed_size / (float)original_size) * 100.0f;
+            snprintf(status, sizeof(status),
+                    "✓ Compressed! Size reduced by %.1f%% (Original: %.2f MB, Compressed: %.2f MB)",
+                    actual_reduction > 0 ? actual_reduction : size_reduction,
+                    original_size / (1024.0f * 1024.0f),
+                    compressed_size / (1024.0f * 1024.0f));
+        } else {
+            snprintf(status, sizeof(status),
+                    "✓ Compressed! Size reduced by %.1f%% - Click 'Download' to save",
+                    size_reduction);
+        }
         update_status(app_data, status);
         
         // Update compression ratio label
         char ratio_text[128];
-        snprintf(ratio_text, sizeof(ratio_text), "Compression Ratio: %.2f:1", ratio);
+        if (original_size > 0 && compressed_size > 0) {
+            float ratio = (float)original_size / (float)compressed_size;
+            snprintf(ratio_text, sizeof(ratio_text), 
+                    "Compression: %.1f%% reduction (%.2fx smaller)", 
+                    size_reduction, ratio);
+        } else {
+            snprintf(ratio_text, sizeof(ratio_text), "Compression: %.1f%% size reduction", size_reduction);
+        }
         gtk_label_set_text(GTK_LABEL(app_data->compression_ratio_label), ratio_text);
         
         // Load compressed image preview
         if (app_data->compressed_image) {
             load_image_preview(app_data, compressed_img, app_data->compressed_image);
         }
+        
+        // Enable download button
+        if (app_data->download_button) {
+            gtk_widget_set_sensitive(app_data->download_button, TRUE);
+        }
     } else {
-        update_status(app_data, "Error: Failed to save compressed image");
+        update_status(app_data, "Error: Failed to create compressed image copy");
     }
     
     image_free(compressed_img);
     gtk_widget_set_sensitive(app_data->compress_button, TRUE);
+}
+
+void on_download_clicked(GtkWidget* widget, gpointer data) {
+    AppData* app_data = (AppData*)data;
+    
+    if (!app_data->compressed_image_data) {
+        update_status(app_data, "Error: No compressed image available. Please compress an image first.");
+        return;
+    }
+    
+    // Create file chooser dialog for saving
+    GtkWidget* dialog = gtk_file_chooser_dialog_new(
+        "Save Compressed Image",
+        GTK_WINDOW(app_data->window),
+        GTK_FILE_CHOOSER_ACTION_SAVE,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Save", GTK_RESPONSE_ACCEPT,
+        NULL);
+    
+    // Set default filename
+    char default_filename[256];
+    time_t t = time(NULL);
+    struct tm* tm_info = localtime(&t);
+    strftime(default_filename, sizeof(default_filename), 
+             "compressed_%Y%m%d_%H%M%S.png", tm_info);
+    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dialog), default_filename);
+    
+    // Add file filters
+    GtkFileFilter* filter_png = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter_png, "PNG Images (*.png)");
+    gtk_file_filter_add_pattern(filter_png, "*.png");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter_png);
+    
+    GtkFileFilter* filter_jpg = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter_jpg, "JPEG Images (*.jpg, *.jpeg)");
+    gtk_file_filter_add_pattern(filter_jpg, "*.jpg");
+    gtk_file_filter_add_pattern(filter_jpg, "*.jpeg");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter_jpg);
+    
+    GtkFileFilter* filter_bmp = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter_bmp, "BMP Images (*.bmp)");
+    gtk_file_filter_add_pattern(filter_bmp, "*.bmp");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter_bmp);
+    
+    GtkFileFilter* filter_all = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter_all, "All Images");
+    gtk_file_filter_add_pattern(filter_all, "*.png");
+    gtk_file_filter_add_pattern(filter_all, "*.jpg");
+    gtk_file_filter_add_pattern(filter_all, "*.jpeg");
+    gtk_file_filter_add_pattern(filter_all, "*.bmp");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter_all);
+    
+    // Show dialog and handle response
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    
+    if (response == GTK_RESPONSE_ACCEPT) {
+        char* filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        
+        if (filename) {
+            update_status(app_data, "Saving compressed image...");
+            
+            if (image_save(app_data->compressed_image_data, filename)) {
+                char status_msg[256];
+                snprintf(status_msg, sizeof(status_msg), 
+                        "✓ Image saved successfully: %s", filename);
+                update_status(app_data, status_msg);
+            } else {
+                update_status(app_data, "Error: Failed to save image");
+            }
+            
+            g_free(filename);
+        }
+    }
+    
+    gtk_widget_destroy(dialog);
 }
 
 void on_activate(GtkApplication* app, gpointer user_data) {
@@ -220,7 +323,7 @@ void on_activate(GtkApplication* app, gpointer user_data) {
     
     // Create main window
     app_data->window = gtk_application_window_new(app);
-    gtk_window_set_title(GTK_WINDOW(app_data->window), "Image Compressor - Sparse Matrix");
+    gtk_window_set_title(GTK_WINDOW(app_data->window), "Image Compressor - 50% Size Reduction");
     gtk_window_set_default_size(GTK_WINDOW(app_data->window), 800, 600);
     
     // Create main container
@@ -265,10 +368,11 @@ void on_activate(GtkApplication* app, gpointer user_data) {
     gtk_box_pack_start(GTK_BOX(output_box), gtk_label_new("Output:"), FALSE, FALSE, 0);
     
     app_data->output_file_entry = gtk_entry_new();
-    gtk_entry_set_text(GTK_ENTRY(app_data->output_file_entry), "compressed_output.png");
+    gtk_entry_set_text(GTK_ENTRY(app_data->output_file_entry), "compressed_output.jpg");
     gtk_box_pack_start(GTK_BOX(output_box), app_data->output_file_entry, TRUE, TRUE, 0);
     
-    // Settings frame
+    // Settings frame - hidden since we use automatic 50% compression
+    // Keeping it for future use but hiding it
     GtkWidget* settings_frame = gtk_frame_new("Compression Settings");
     gtk_box_pack_start(GTK_BOX(main_box), settings_frame, FALSE, FALSE, 0);
     
@@ -276,19 +380,31 @@ void on_activate(GtkApplication* app, gpointer user_data) {
     gtk_container_add(GTK_CONTAINER(settings_frame), settings_box);
     gtk_container_set_border_width(GTK_CONTAINER(settings_box), 10);
     
-    gtk_box_pack_start(GTK_BOX(settings_box), 
-                      gtk_label_new("Threshold (0-255):"), FALSE, FALSE, 0);
+    GtkWidget* info_label = gtk_label_new("Automatic compression: Target 50% file size reduction");
+    gtk_box_pack_start(GTK_BOX(settings_box), info_label, FALSE, FALSE, 0);
     
+    // Keep threshold_spin for structure but hide it
     app_data->threshold_spin = gtk_spin_button_new_with_range(0, 255, 1);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(app_data->threshold_spin), 10);
-    gtk_box_pack_start(GTK_BOX(settings_box), app_data->threshold_spin, FALSE, FALSE, 0);
+    gtk_widget_hide(app_data->threshold_spin);
+    
+    // Buttons box
+    GtkWidget* button_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_box_pack_start(GTK_BOX(main_box), button_box, FALSE, FALSE, 0);
     
     // Compression button
     app_data->compress_button = gtk_button_new_with_label("Compress Image");
     gtk_widget_set_sensitive(app_data->compress_button, FALSE);
     g_signal_connect(app_data->compress_button, "clicked",
                     G_CALLBACK(on_compress_clicked), app_data);
-    gtk_box_pack_start(GTK_BOX(main_box), app_data->compress_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(button_box), app_data->compress_button, TRUE, TRUE, 0);
+    
+    // Download button
+    app_data->download_button = gtk_button_new_with_label("⬇ Download Compressed Image");
+    gtk_widget_set_sensitive(app_data->download_button, FALSE);
+    g_signal_connect(app_data->download_button, "clicked",
+                    G_CALLBACK(on_download_clicked), app_data);
+    gtk_box_pack_start(GTK_BOX(button_box), app_data->download_button, TRUE, TRUE, 0);
     
     // Images preview section
     GtkWidget* preview_frame = gtk_frame_new("Image Preview");
@@ -331,6 +447,10 @@ void free_app_resources(AppData* app_data) {
     if (app_data) {
         if (app_data->current_image) {
             image_free(app_data->current_image);
+        }
+        
+        if (app_data->compressed_image_data) {
+            image_free(app_data->compressed_image_data);
         }
         
         if (app_data->current_sparse && app_data->current_channels > 0) {

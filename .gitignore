@@ -1,8 +1,13 @@
 *.o
 image_compressor
 *.dSYM
-compressed_output.png
+compressed_output.*
 *.jpg
 *.jpeg
 *.bmp
+temp_*.jpg
+temp_*.png
+temp_orig_size.jpg
+temp_original_comp_check.jpg
+temp_comp_*.jpg
 
